@@ -282,7 +282,7 @@ export function apply(ctx: Context, config: Config) {
       
       if (!croppedImage) {
         logger.error(`[调试] 生成裁剪图片失败: ${randomSong.title} (ID: ${randomSong.id})`)
-        return '生成裁剪图片失败，请稍后重试'
+        return '生成裁剪图片失败，请检查参数'
       }
       
       logger.info(`[调试] 生成裁剪图片成功: ${randomSong.title} (ID: ${randomSong.id})`)

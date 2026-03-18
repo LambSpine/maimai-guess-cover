@@ -1,7 +1,7 @@
 {
   "name": "koishi-plugin-maimai-guess-cover",
   "description": "舞萌猜封面小游戏",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "contributors": [
     "LambSpine <andy1206hu@gmail.com>"
   ],
