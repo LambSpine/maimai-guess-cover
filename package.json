@@ -16,6 +16,9 @@
     "plugin"
   ],
   "devDependencies": {},
+  "dependencies": {
+    "sharp": "^0.33.2"
+  },
   "peerDependencies": {
     "koishi": "^4.18.11"
   }
