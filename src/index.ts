@@ -239,7 +239,7 @@ export function apply(ctx: Context, config: Config) {
       }
     })
 
-  coverCmd.subcommand('.guess [size:number]', '猜曲绘游戏')
+  coverCmd.subcommand('.guess', '猜曲绘游戏')
     .alias('猜曲绘')
     .option('size', '-s <size:number> 截取正方形边长像素，默认120，范围1~400')
     .option('blur', '-b <blur:number> 模糊程度，范围0.3~1000')

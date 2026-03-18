@@ -1,7 +1,15 @@
 {
   "name": "koishi-plugin-maimai-guess-cover",
   "description": "舞萌猜封面小游戏",
-  "version": "0.0.1",
+  "version": "0.0.2",
+  "contributors": [
+    "LambSpine <andy1206hu@gmail.com>"
+  ],
+  "homepage": "https://github.com/LambSpine/maimai-guess-cover",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/LambSpine/maimai-guess-cover.git"
+  },
   "main": "lib/index.js",
   "typings": "lib/index.d.ts",
   "files": [
