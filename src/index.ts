@@ -8,9 +8,45 @@ const logger = new Logger('maimai-guess-cover')
 const COVER_DIR = path.join(process.cwd(), 'data', 'maimai-guess-cover')
 const STORAGE_DIR = path.join(process.cwd(), 'data', 'maimai-guess-cover-game')
 const STORAGE_FILE = path.join(STORAGE_DIR, 'game-cache.json')
+const DESCRIPTION_CACHE_FILE = path.join(STORAGE_DIR, 'description-cache.json')
 
 if (!fs.existsSync(STORAGE_DIR)) {
   fs.mkdirSync(STORAGE_DIR, { recursive: true })
+}
+
+interface DescriptionCache {
+  descriptions: Record<string, string>
+}
+
+function loadDescriptionCache(): DescriptionCache {
+  try {
+    if (fs.existsSync(DESCRIPTION_CACHE_FILE)) {
+      const data = fs.readFileSync(DESCRIPTION_CACHE_FILE, 'utf-8')
+      return JSON.parse(data)
+    }
+  } catch (error) {
+    logger.error('加载图片描述缓存失败:', error)
+  }
+  return { descriptions: {} }
+}
+
+function saveDescriptionCache(cache: DescriptionCache) {
+  try {
+    fs.writeFileSync(DESCRIPTION_CACHE_FILE, JSON.stringify(cache, null, 2))
+  } catch (error) {
+    logger.error('保存图片描述缓存失败:', error)
+  }
+}
+
+function getCachedDescription(songId: string): string | undefined {
+  const cache = loadDescriptionCache()
+  return cache.descriptions[songId]
+}
+
+function setCachedDescription(songId: string, description: string) {
+  const cache = loadDescriptionCache()
+  cache.descriptions[songId] = description
+  saveDescriptionCache(cache)
 }
 
 export const name = 'maimai-guess-cover'
@@ -18,6 +54,7 @@ export const name = 'maimai-guess-cover'
 export interface Config {
   musicDataUrl: string
   aliasDataUrl: string
+  dashscopeApiKey?: string
 }
 
 export const Config: Schema<Config> = Schema.object({
@@ -27,6 +64,8 @@ export const Config: Schema<Config> = Schema.object({
   aliasDataUrl: Schema.string()
     .default('https://oss.lista233.cn/alias.json')
     .description('别名数据 API 地址'),
+  dashscopeApiKey: Schema.string()
+    .description('通义千问 DashScope API Key（用于 -word 模式）'),
 })
 
 interface SongData {
@@ -66,6 +105,8 @@ interface CoverGame {
   size: number
   blur: number
   greyscale: boolean
+  wordMode: boolean
+  imageDescription?: string
   timerId: NodeJS.Timeout | null
 }
 
@@ -168,6 +209,56 @@ async function cropCoverImage(songId: string, size: number, blur: number, greysc
   }
 }
 
+async function generateImageDescription(imageBuffer: Buffer, apiKey: string): Promise<string> {
+  try {
+    const base64Image = imageBuffer.toString('base64')
+    
+    const response = await fetch('https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${apiKey}`
+      },
+      body: JSON.stringify({
+        model: 'qwen-vl-max-latest',
+        messages: [
+          {
+            role: 'user',
+            content: [
+              {
+                type: 'text',
+                text: '请用一句话简洁地描述这张图片的画面内容，不要提及这是游戏封面或歌曲封面，直接描述画面中的元素。注意：不要识别或描述图片中的任何文字内容，只描述画面中的视觉元素、人物、场景、颜色、构图等。'
+              },
+              {
+                type: 'image_url',
+                image_url: {
+                  url: `data:image/jpeg;base64,${base64Image}`
+                }
+              }
+            ]
+          }
+        ],
+        max_tokens: 100
+      })
+    })
+    
+    if (!response.ok) {
+      const errorText = await response.text()
+      throw new Error(`API 请求失败: ${response.status} - ${errorText}`)
+    }
+    
+    const data = await response.json()
+    if (!data.choices || !data.choices[0] || !data.choices[0].message) {
+      throw new Error('API 返回数据格式错误')
+    }
+    
+    return data.choices[0].message.content.trim()
+  } catch (error) {
+    logger.error('生成图片描述失败:', error)
+    throw error
+  }
+}
+
 const games = new Map<string, CoverGame>()
 
 export function apply(ctx: Context, config: Config) {
@@ -244,6 +335,7 @@ export function apply(ctx: Context, config: Config) {
     .option('size', '-s <size:number> 截取正方形边长像素，默认120，范围1~400')
     .option('blur', '-b <blur:number> 模糊程度，范围0.3~1000')
     .option('greyscale', '-g 启用黑白效果')
+    .option('word', '-w 启用文字描述模式（需要配置 dashscopeApiKey）')
     .action(async ({ session, options }) => {
       if (!session) return
 
@@ -251,6 +343,7 @@ export function apply(ctx: Context, config: Config) {
       const size = options?.size || 120
       const blur = options?.blur !== undefined ? Number(options.blur) : 0
       const greyscale = options?.greyscale || false
+      const wordMode = options?.word || false
 
       // 验证尺寸范围 1~400
       if (size < 1 || size > 400) {
@@ -260,6 +353,11 @@ export function apply(ctx: Context, config: Config) {
       // 验证模糊程度范围 0.3~1000
       if (blur > 0 && (blur < 0.3 || blur > 1000)) {
         return '模糊程度必须在 0.3~1000 之间'
+      }
+
+      // 验证 word 模式配置
+      if (wordMode && !config.dashscopeApiKey) {
+        return '文字描述模式需要配置 dashscopeApiKey'
       }
 
       if (gameCache.musicData.length === 0) {
@@ -276,16 +374,47 @@ export function apply(ctx: Context, config: Config) {
       }
 
       const randomSong = songsWithCover[Math.floor(Math.random() * songsWithCover.length)]
-      logger.info(`[调试] 随机选择曲绘: ${randomSong.title} (ID: ${randomSong.id}), 裁剪尺寸: ${size}x${size}, 模糊程度: ${blur}, 黑白: ${greyscale}`)
+      logger.info(`[调试] 随机选择曲绘: ${randomSong.title} (ID: ${randomSong.id}), 裁剪尺寸: ${size}x${size}, 模糊程度: ${blur}, 黑白: ${greyscale}, 文字模式: ${wordMode}`)
       
-      const croppedImage = await cropCoverImage(randomSong.id, size, blur, greyscale)
+      let imageDescription: string | undefined
+      let croppedImage: Buffer | null = null
       
-      if (!croppedImage) {
-        logger.error(`[调试] 生成裁剪图片失败: ${randomSong.title} (ID: ${randomSong.id})`)
-        return '生成裁剪图片失败，请检查参数'
+      if (wordMode && config.dashscopeApiKey) {
+        const paddedSongId = randomSong.id.toString().padStart(5, '0')
+        const coverPath = path.join(COVER_DIR, `${paddedSongId}.jpg`)
+        
+        if (!fs.existsSync(coverPath)) {
+          logger.error(`[调试] 封面文件不存在: ${coverPath}`)
+          return '封面文件不存在'
+        }
+        
+        try {
+          const cachedDescription = getCachedDescription(randomSong.id)
+          if (cachedDescription) {
+            logger.info(`[调试] 使用缓存的描述: ${cachedDescription}`)
+            imageDescription = cachedDescription
+          } else {
+            await session.send('正在生成图片描述，请稍候...')
+            const originalImage = fs.readFileSync(coverPath)
+            imageDescription = await generateImageDescription(originalImage, config.dashscopeApiKey)
+            logger.info(`[调试] 生成图片描述: ${imageDescription}`)
+            setCachedDescription(randomSong.id, imageDescription)
+            logger.info(`[调试] 保存描述到缓存: ${randomSong.id}`)
+          }
+        } catch (error) {
+          logger.error('生成图片描述失败:', error)
+          return '生成图片描述失败，请稍后重试'
+        }
+      } else {
+        croppedImage = await cropCoverImage(randomSong.id, size, blur, greyscale)
+        
+        if (!croppedImage) {
+          logger.error(`[调试] 生成裁剪图片失败: ${randomSong.title} (ID: ${randomSong.id})`)
+          return '生成裁剪图片失败，请检查参数'
+        }
+        
+        logger.info(`[调试] 生成裁剪图片成功: ${randomSong.title} (ID: ${randomSong.id})`)
       }
-      
-      logger.info(`[调试] 生成裁剪图片成功: ${randomSong.title} (ID: ${randomSong.id})`)
 
       const game: CoverGame = {
         channelId,
@@ -296,17 +425,27 @@ export function apply(ctx: Context, config: Config) {
         size,
         blur,
         greyscale,
+        wordMode,
+        imageDescription,
         timerId: null
       }
 
       games.set(channelId, game)
 
-      await session.send([
-        `猜曲绘游戏开始！`,
-        `截取大小: ${size}x${size} 像素\n`,
-        `请猜出这是哪首歌的封面`,
-        h.image(croppedImage, 'image/jpeg')
-      ])
+      if (wordMode && imageDescription) {
+        await session.send([
+          `猜曲绘游戏开始！`,
+          `图片描述：${imageDescription}\n`,
+          `请根据描述猜出这是哪首歌的封面`
+        ])
+      } else {
+        await session.send([
+          `猜曲绘游戏开始！`,
+          `截取大小: ${size}x${size} 像素\n`,
+          `请猜出这是哪首歌的封面`,
+          h.image(croppedImage, 'image/jpeg')
+        ])
+      }
 
       const timerId = setTimeout(() => {
         const currentGame = games.get(channelId)
@@ -317,7 +456,6 @@ export function apply(ctx: Context, config: Config) {
         }
       }, 60000)
 
-      // 保存定时器ID到游戏对象
       game.timerId = timerId
 
       return
